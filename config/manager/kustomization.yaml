@@ -5,4 +5,4 @@ resources:
 images:
   - name: tender
     newName: ghcr.io/paguos/tender-operator
-    newTag: "0.0.0" # x-release-please-version
+    newTag: "1.0.0" # x-release-please-version
