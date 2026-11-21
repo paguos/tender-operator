@@ -1,0 +1,189 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: buckets.cloud.paguos.dev
+spec:
+  group: cloud.paguos.dev
+  names:
+    kind: Bucket
+    listKind: BucketList
+    plural: buckets
+    singular: bucket
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.bucketName
+      name: Bucket
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Bucket is a Google Cloud Storage bucket plus credentials for
+          using it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BucketSpec is the desired state of a Bucket.
+            properties:
+              bucketName:
+                description: |-
+                  BucketName overrides the generated bucket name. Bucket names are global,
+                  so the generated name includes the operator's name prefix, the namespace
+                  and the object name. Immutable.
+                maxLength: 63
+                minLength: 3
+                pattern: ^[a-z0-9][a-z0-9_.-]*[a-z0-9]$
+                type: string
+              credentialsSecret:
+                description: |-
+                  CredentialsSecret is the name of the Secret, in this namespace, that
+                  receives a service-account key with object admin access to this bucket.
+                  Defaults to "<name>-gcs". Immutable.
+                minLength: 1
+                type: string
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy says what happens to the bucket when this object is deleted.
+                  Delete only removes an empty bucket; a bucket with objects blocks deletion
+                  until it is emptied.
+                enum:
+                - Retain
+                - Delete
+                type: string
+              location:
+                description: Location of the bucket, e.g. EU, US or europe-west3.
+                  Immutable.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: location is immutable
+                  rule: self == oldSelf
+              storageClass:
+                default: STANDARD
+                description: StorageClass of the bucket.
+                enum:
+                - STANDARD
+                - NEARLINE
+                - COLDLINE
+                - ARCHIVE
+                type: string
+            required:
+            - location
+            type: object
+            x-kubernetes-validations:
+            - message: bucketName is immutable
+              rule: has(self.bucketName) == has(oldSelf.bucketName) && (!has(self.bucketName)
+                || self.bucketName == oldSelf.bucketName)
+            - message: credentialsSecret is immutable
+              rule: has(self.credentialsSecret) == has(oldSelf.credentialsSecret)
+                && (!has(self.credentialsSecret) || self.credentialsSecret == oldSelf.credentialsSecret)
+          status:
+            description: BucketStatus is the observed state of a Bucket.
+            properties:
+              bucketName:
+                description: BucketName is the name of the cloud bucket.
+                type: string
+              conditions:
+                description: 'Conditions: Ready.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the generation the status was computed
+                  for.
+                format: int64
+                type: integer
+              serviceAccount:
+                description: ServiceAccount is the email of the service account that
+                  can use the bucket.
+                type: string
+              url:
+                description: URL of the bucket (gs://...).
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

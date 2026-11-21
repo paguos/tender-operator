@@ -1,0 +1,10 @@
+apiVersion: cloud.paguos.dev/v1alpha1
+kind: Bucket
+metadata:
+  name: files
+  namespace: my-app
+spec:
+  location: EU
+  # storageClass: STANDARD
+  # deletionPolicy: Retain     # or Delete (only removes an empty bucket)
+  # credentialsSecret: files-gcs
