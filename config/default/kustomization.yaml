@@ -1,6 +1,6 @@
 # Everything tender needs. Use it as a remote base, pinned to a release:
 #   resources:
-#     - https://github.com/paguos/tender-operator//config/default?ref=v1.0.0 # x-release-please-version
+#     - https://github.com/paguos/tender-operator//config/default?ref=v0.0.0 # x-release-please-version
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: tender-system
