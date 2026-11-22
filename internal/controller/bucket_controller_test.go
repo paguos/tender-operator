@@ -1,75 +1,25 @@
 package controller
 
 import (
-	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1alpha1 "github.com/paguos/tender-operator/api/v1alpha1"
 	"github.com/paguos/tender-operator/internal/cloud"
-	"github.com/paguos/tender-operator/internal/cloud/fake"
 )
 
-const (
-	project    = "test-project"
-	ns         = "shop-dev"
-	wantBucket = "tender-shop-dev-files"
-)
-
-type env struct {
-	t     *testing.T
-	ctx   context.Context
-	cloud *fake.Provider
-	kube  client.Client
-	r     *BucketReconciler
-}
-
-func newEnv(t *testing.T, objs ...client.Object) *env {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	kube := clientfake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&cloudv1alpha1.Bucket{}).
-		WithObjects(objs...).
-		Build()
-	fc := fake.New(project)
-	return &env{
-		t:     t,
-		ctx:   context.Background(),
-		cloud: fc,
-		kube:  kube,
-		r: &BucketReconciler{
-			Client:  kube,
-			Scheme:  scheme,
-			Cloud:   fc,
-			Project: project,
-			Prefix:  "tender",
-			Resync:  10,
-			Recheck: 5,
-		},
-	}
-}
+const wantBucket = "tender-shop-dev-files"
 
 func newBucket(mut ...func(*cloudv1alpha1.Bucket)) *cloudv1alpha1.Bucket {
 	b := &cloudv1alpha1.Bucket{
-		ObjectMeta: metav1.ObjectMeta{Name: "files", Namespace: ns, UID: types.UID("uid-1")},
+		ObjectMeta: metav1.ObjectMeta{Name: "files", Namespace: ns, UID: types.UID("uid-files")},
 		Spec: cloudv1alpha1.BucketSpec{
 			Location:       "EU",
 			StorageClass:   "STANDARD",
@@ -82,55 +32,71 @@ func newBucket(mut ...func(*cloudv1alpha1.Bucket)) *cloudv1alpha1.Bucket {
 	return b
 }
 
-func (e *env) reconcile() (ctrl.Result, error) {
-	e.t.Helper()
-	return e.r.Reconcile(e.ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "files"}})
+func withAccess(refs ...string) func(*cloudv1alpha1.Bucket) {
+	return func(b *cloudv1alpha1.Bucket) {
+		for _, r := range refs {
+			b.Spec.Access = append(b.Spec.Access, cloudv1alpha1.BucketAccess{IdentityRef: r})
+		}
+	}
 }
 
-func (e *env) mustReconcile() ctrl.Result {
+func withPolicy(p cloudv1alpha1.DeletionPolicy) func(*cloudv1alpha1.Bucket) {
+	return func(b *cloudv1alpha1.Bucket) { b.Spec.DeletionPolicy = p }
+}
+
+func (e *env) reconcileBucket() (ctrl.Result, error) {
 	e.t.Helper()
-	res, err := e.reconcile()
+	return e.bucket.Reconcile(e.ctx, req("files"))
+}
+
+func (e *env) mustReconcileBucket() ctrl.Result {
+	e.t.Helper()
+	res, err := e.reconcileBucket()
 	if err != nil {
-		e.t.Fatalf("reconcile: %v", err)
+		e.t.Fatalf("reconcile bucket: %v", err)
 	}
 	return res
 }
 
-func (e *env) bucket() *cloudv1alpha1.Bucket {
+func (e *env) getBucket() *cloudv1alpha1.Bucket {
 	e.t.Helper()
 	var b cloudv1alpha1.Bucket
-	if err := e.kube.Get(e.ctx, types.NamespacedName{Namespace: ns, Name: "files"}, &b); err != nil {
-		e.t.Fatalf("get bucket: %v", err)
-	}
+	e.get("files", &b)
 	return &b
 }
 
-func (e *env) secret() *corev1.Secret {
+func (e *env) updateBucket(mut func(*cloudv1alpha1.Bucket)) {
 	e.t.Helper()
-	var s corev1.Secret
-	if err := e.kube.Get(e.ctx, types.NamespacedName{Namespace: ns, Name: "files-gcs"}, &s); err != nil {
-		e.t.Fatalf("get secret: %v", err)
+	b := e.getBucket()
+	mut(b)
+	if err := e.kube.Update(e.ctx, b); err != nil {
+		e.t.Fatal(err)
 	}
-	return &s
 }
 
-func ready(b *cloudv1alpha1.Bucket) *metav1.Condition {
-	return meta.FindStatusCondition(b.Status.Conditions, ConditionReady)
+func (e *env) bucketReason() string {
+	e.t.Helper()
+	c := readyOf(e.getBucket().Status.Conditions)
+	if c == nil {
+		return ""
+	}
+	return c.Reason
 }
 
-func email(e *env) string {
-	return e.bucket().Status.ServiceAccount
+// member returns the IAM member of a reconciled Identity.
+func (e *env) member(name string) string {
+	e.t.Helper()
+	return "serviceAccount:" + e.getIdentity(name).Status.ServiceAccount
 }
 
-func TestProvisions(t *testing.T) {
+func TestBucketProvisions(t *testing.T) {
 	e := newEnv(t, newBucket())
-	res := e.mustReconcile()
-	if res.RequeueAfter != e.r.Resync {
-		t.Errorf("RequeueAfter = %v, want resync %v", res.RequeueAfter, e.r.Resync)
+	if res := e.mustReconcileBucket(); res.RequeueAfter != resync {
+		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, resync)
 	}
 
-	b := e.bucket()
-	if c := ready(b); c == nil || c.Status != metav1.ConditionTrue {
+	b := e.getBucket()
+	if c := readyOf(b.Status.Conditions); c == nil || c.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready = %+v", c)
 	}
 	if b.Status.BucketName != wantBucket || b.Status.URL != "gs://"+wantBucket {
@@ -147,101 +113,140 @@ func TestProvisions(t *testing.T) {
 	if got.Location != "EU" || got.Labels["managed-by"] != "tender" || got.Labels["namespace"] != ns || got.Labels["name"] != "files" {
 		t.Errorf("cloud bucket = %+v", got)
 	}
-
-	sa := b.Status.ServiceAccount
-	if !e.cloud.HasAccount(sa) {
-		t.Fatalf("service account %q missing", sa)
-	}
-	if m := e.cloud.Members(wantBucket, BucketRole); len(m) != 1 || m[0] != "serviceAccount:"+sa {
-		t.Errorf("members of %s = %v", BucketRole, m)
+	if len(e.cloud.Bindings(wantBucket)) != 0 {
+		t.Errorf("bindings without access: %v", e.cloud.Bindings(wantBucket))
 	}
 
-	s := e.secret()
-	keys := e.cloud.Keys(sa)
-	if len(keys) != 1 || s.Annotations[KeyIDAnnotation] != keys[0] {
-		t.Errorf("keys = %v, secret key-id = %q", keys, s.Annotations[KeyIDAnnotation])
+	var cm corev1.ConfigMap
+	e.get("files-bucket", &cm)
+	if cm.Data["BUCKET_NAME"] != wantBucket || cm.Data["BUCKET_URL"] != "gs://"+wantBucket || cm.Data["GCP_PROJECT"] != project {
+		t.Errorf("configmap data = %v", cm.Data)
 	}
-	if string(s.Data["BUCKET_NAME"]) != wantBucket || string(s.Data["GCP_PROJECT"]) != project || len(s.Data["credentials.json"]) == 0 {
-		t.Errorf("secret data = %v", s.Data)
-	}
-	if s.Labels[ManagedByLabel] != ManagedByValue {
-		t.Errorf("secret labels = %v", s.Labels)
-	}
-	if !metav1.IsControlledBy(s, b) {
-		t.Error("secret is not controlled by the Bucket")
+	if !metav1.IsControlledBy(&cm, b) || cm.Labels[ManagedByLabel] != ManagedByValue {
+		t.Errorf("configmap not owned or labelled: %+v", cm.ObjectMeta)
 	}
 }
 
-func TestIdempotent(t *testing.T) {
-	e := newEnv(t, newBucket())
-	e.mustReconcile()
-	before := e.secret().Annotations[KeyIDAnnotation]
-	e.mustReconcile()
-	e.mustReconcile()
+func TestBucketGrantsAccess(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newIdentity("reader"), newBucket(func(b *cloudv1alpha1.Bucket) {
+		b.Spec.Access = []cloudv1alpha1.BucketAccess{
+			{IdentityRef: "app"}, // role defaults to objectAdmin
+			{IdentityRef: "reader", Role: cloudv1alpha1.BucketRoleObjectViewer},
+		}
+	}))
+	e.mustReconcileIdentity("app")
+	e.mustReconcileIdentity("reader")
+	e.mustReconcileBucket()
 
-	if after := e.secret().Annotations[KeyIDAnnotation]; after != before {
-		t.Errorf("key changed on a no-op reconcile: %s -> %s", before, after)
+	if m := e.cloud.Members(wantBucket, "roles/storage.objectAdmin"); !slices.Equal(m, []string{e.member("app")}) {
+		t.Errorf("objectAdmin = %v", m)
 	}
-	if keys := e.cloud.Keys(email(e)); len(keys) != 1 {
-		t.Errorf("keys = %v, want one", keys)
+	if m := e.cloud.Members(wantBucket, "roles/storage.objectViewer"); !slices.Equal(m, []string{e.member("reader")}) {
+		t.Errorf("objectViewer = %v", m)
+	}
+	if n := len(e.getBucket().Status.Bindings); n != 2 {
+		t.Errorf("status.bindings = %v", e.getBucket().Status.Bindings)
 	}
 }
 
-func TestDeletedSecretGetsNewKey(t *testing.T) {
-	e := newEnv(t, newBucket())
-	e.mustReconcile()
-	old := e.secret().Annotations[KeyIDAnnotation]
+func TestBucketWaitsForIdentity(t *testing.T) {
+	e := newEnv(t, newBucket(withAccess("app")))
 
-	if err := e.kube.Delete(e.ctx, e.secret()); err != nil {
+	res := e.mustReconcileBucket() // no error: waiting is not a failure
+	if res.RequeueAfter != recheck || e.bucketReason() != "IdentityNotFound" {
+		t.Fatalf("RequeueAfter = %v, reason = %s", res.RequeueAfter, e.bucketReason())
+	}
+	if !e.cloud.HasBucket(wantBucket) {
+		t.Error("bucket should be created while waiting for the identity")
+	}
+
+	if err := e.kube.Create(e.ctx, newIdentity("app")); err != nil {
 		t.Fatal(err)
 	}
-	e.mustReconcile()
-
-	cur := e.secret().Annotations[KeyIDAnnotation]
-	if cur == old {
-		t.Fatal("expected a new key")
+	e.mustReconcileBucket()
+	if e.bucketReason() != "IdentityNotReady" {
+		t.Fatalf("reason = %s", e.bucketReason())
 	}
-	if keys := e.cloud.Keys(email(e)); len(keys) != 1 || keys[0] != cur {
-		t.Errorf("keys = %v, want only %s", keys, cur)
+
+	e.mustReconcileIdentity("app")
+	e.mustReconcileBucket()
+	if c := readyOf(e.getBucket().Status.Conditions); c.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %+v", c)
+	}
+	if m := e.cloud.Members(wantBucket, "roles/storage.objectAdmin"); !slices.Equal(m, []string{e.member("app")}) {
+		t.Errorf("objectAdmin = %v", m)
 	}
 }
 
-func TestStaleKeysAreDeleted(t *testing.T) {
-	e := newEnv(t, newBucket())
-	e.mustReconcile()
-	sa := email(e)
-	if _, err := e.cloud.CreateKey(e.ctx, sa); err != nil {
+func TestBucketRevokesRemovedAccess(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newBucket(withAccess("app")))
+	e.mustReconcileIdentity("app")
+	e.mustReconcileBucket()
+
+	e.updateBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.Access = nil })
+	e.mustReconcileBucket()
+
+	if bs := e.cloud.Bindings(wantBucket); len(bs) != 0 {
+		t.Errorf("bindings left: %v", bs)
+	}
+	if bs := e.getBucket().Status.Bindings; len(bs) != 0 {
+		t.Errorf("status.bindings = %v", bs)
+	}
+}
+
+func TestBucketRoleChange(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newBucket(withAccess("app")))
+	e.mustReconcileIdentity("app")
+	e.mustReconcileBucket()
+
+	e.updateBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.Access[0].Role = cloudv1alpha1.BucketRoleObjectViewer })
+	e.mustReconcileBucket()
+
+	bs := e.cloud.Bindings(wantBucket)
+	if len(bs) != 1 || !slices.Equal(bs["roles/storage.objectViewer"], []string{e.member("app")}) {
+		t.Errorf("bindings = %v", bs)
+	}
+}
+
+func TestBucketLeavesOtherBindingsAlone(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newBucket(withAccess("app")))
+	e.mustReconcileIdentity("app")
+	e.mustReconcileBucket()
+	if err := e.cloud.GrantBucketRole(e.ctx, wantBucket, "roles/storage.objectViewer", "user:someone@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	e.mustReconcile()
-	if keys := e.cloud.Keys(sa); len(keys) != 1 || keys[0] != e.secret().Annotations[KeyIDAnnotation] {
-		t.Errorf("keys = %v", keys)
+
+	e.updateBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.Access = nil })
+	e.mustReconcileBucket()
+
+	if m := e.cloud.Members(wantBucket, "roles/storage.objectViewer"); !slices.Equal(m, []string{"user:someone@example.com"}) {
+		t.Errorf("removed a binding tender did not grant: %v", m)
 	}
 }
 
-func TestRevokedKeyIsReplaced(t *testing.T) {
-	e := newEnv(t, newBucket())
-	e.mustReconcile()
-	sa, old := email(e), e.secret().Annotations[KeyIDAnnotation]
-	if err := e.cloud.DeleteKey(e.ctx, sa, old); err != nil {
+func TestBucketRestoresDriftedBinding(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newBucket(withAccess("app")))
+	e.mustReconcileIdentity("app")
+	e.mustReconcileBucket()
+	if err := e.cloud.RevokeBucketRole(e.ctx, wantBucket, "roles/storage.objectAdmin", e.member("app")); err != nil {
 		t.Fatal(err)
 	}
-	e.mustReconcile()
-	if cur := e.secret().Annotations[KeyIDAnnotation]; cur == old {
-		t.Error("secret still holds the revoked key")
+	e.mustReconcileBucket()
+	if m := e.cloud.Members(wantBucket, "roles/storage.objectAdmin"); len(m) != 1 {
+		t.Errorf("binding not restored: %v", m)
 	}
 }
 
-func TestDriftIsCorrected(t *testing.T) {
+func TestBucketDriftIsCorrected(t *testing.T) {
 	e := newEnv(t, newBucket())
-	e.mustReconcile()
+	e.mustReconcileBucket()
 	if err := e.cloud.UpdateBucket(e.ctx, cloud.BucketSpec{
 		Name: wantBucket, StorageClass: "COLDLINE",
 		Labels: map[string]string{"managed-by": "tender", "namespace": ns, "name": "files", "extra": "x"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	e.mustReconcile()
+	e.mustReconcileBucket()
 	got, _ := e.cloud.GetBucket(e.ctx, wantBucket)
 	if got.StorageClass != "STANDARD" || got.Labels["extra"] != "" {
 		t.Errorf("drift not corrected: %+v", got)
@@ -250,161 +255,140 @@ func TestDriftIsCorrected(t *testing.T) {
 
 func TestBucketNameOverride(t *testing.T) {
 	e := newEnv(t, newBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.BucketName = "my-custom-bucket" }))
-	e.mustReconcile()
+	e.mustReconcileBucket()
 	if !e.cloud.HasBucket("my-custom-bucket") {
 		t.Error("custom bucket not created")
 	}
 }
 
-func TestForeignBucketConflicts(t *testing.T) {
-	e := newEnv(t, newBucket())
+func TestBucketForeignBucketConflicts(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newBucket(withAccess("app")))
+	e.mustReconcileIdentity("app")
 	if err := e.cloud.CreateBucket(e.ctx, cloud.BucketSpec{Name: wantBucket, Location: "EU"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.reconcile(); err == nil {
+	if _, err := e.reconcileBucket(); err == nil {
 		t.Fatal("expected an error")
 	}
-	b := e.bucket()
-	if c := ready(b); c == nil || c.Status != metav1.ConditionFalse || c.Reason != "BucketConflict" {
-		t.Errorf("Ready = %+v", c)
+	if e.bucketReason() != "BucketConflict" {
+		t.Errorf("reason = %s", e.bucketReason())
 	}
-	if b.Status.ServiceAccount != "" {
-		t.Error("service account created for a foreign bucket")
+	if bs := e.cloud.Bindings(wantBucket); len(bs) != 0 {
+		t.Errorf("granted access on a foreign bucket: %v", bs)
 	}
 }
 
-func TestOtherObjectsBucketConflicts(t *testing.T) {
+func TestBucketOtherObjectsBucketConflicts(t *testing.T) {
 	e := newEnv(t, newBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.BucketName = "shared" }))
 	if err := e.cloud.CreateBucket(e.ctx, cloud.BucketSpec{Name: "shared", Location: "EU",
 		Labels: map[string]string{"managed-by": "tender", "namespace": "other", "name": "files"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.reconcile(); err == nil {
+	if _, err := e.reconcileBucket(); err == nil {
 		t.Fatal("expected an error")
 	}
-	if c := ready(e.bucket()); c.Reason != "BucketConflict" {
-		t.Errorf("reason = %s", c.Reason)
+	if e.bucketReason() != "BucketConflict" {
+		t.Errorf("reason = %s", e.bucketReason())
 	}
 }
 
-func TestLocationMismatch(t *testing.T) {
+func TestBucketLocationMismatch(t *testing.T) {
 	e := newEnv(t, newBucket())
-	e.mustReconcile()
-	b := e.bucket()
-	b.Spec.Location = "US"
-	if err := e.kube.Update(e.ctx, b); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.reconcile(); err == nil {
+	e.mustReconcileBucket()
+	e.updateBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.Location = "US" })
+	if _, err := e.reconcileBucket(); err == nil {
 		t.Fatal("expected an error")
 	}
-	if c := ready(e.bucket()); c.Reason != "LocationMismatch" {
-		t.Errorf("reason = %s", c.Reason)
+	if e.bucketReason() != "LocationMismatch" {
+		t.Errorf("reason = %s", e.bucketReason())
 	}
 }
 
-func TestForeignSecretConflicts(t *testing.T) {
-	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "files-gcs", Namespace: ns}}
+func TestBucketForeignConfigMapConflicts(t *testing.T) {
+	foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "files-bucket", Namespace: ns}}
 	e := newEnv(t, newBucket(), foreign)
-	if _, err := e.reconcile(); err == nil {
+	if _, err := e.reconcileBucket(); err == nil {
 		t.Fatal("expected an error")
 	}
-	if c := ready(e.bucket()); c.Reason != "SecretConflict" {
-		t.Errorf("reason = %s", c.Reason)
-	}
-	if keys := e.cloud.Keys(email(e)); len(keys) != 0 {
-		t.Errorf("created keys %v despite the conflict", keys)
+	if e.bucketReason() != "ConfigMapConflict" {
+		t.Errorf("reason = %s", e.bucketReason())
 	}
 }
 
-func TestCloudErrorSetsNotReady(t *testing.T) {
+func TestBucketCloudErrorRecovers(t *testing.T) {
 	e := newEnv(t, newBucket())
 	e.cloud.Err = errors.New("boom")
-	if _, err := e.reconcile(); err == nil {
+	if _, err := e.reconcileBucket(); err == nil {
 		t.Fatal("expected an error")
 	}
-	c := ready(e.bucket())
-	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != "BucketFailed" {
-		t.Errorf("Ready = %+v", c)
+	if e.bucketReason() != "BucketFailed" {
+		t.Errorf("reason = %s", e.bucketReason())
 	}
-
 	e.cloud.Err = nil
-	e.mustReconcile()
-	if c := ready(e.bucket()); c.Status != metav1.ConditionTrue {
+	e.mustReconcileBucket()
+	if c := readyOf(e.getBucket().Status.Conditions); c.Status != metav1.ConditionTrue {
 		t.Errorf("did not recover: %+v", c)
 	}
 }
 
-func (e *env) delete() {
-	e.t.Helper()
-	if err := e.kube.Delete(e.ctx, e.bucket()); err != nil {
-		e.t.Fatal(err)
-	}
-}
-
-func (e *env) gone() bool {
-	var b cloudv1alpha1.Bucket
-	err := e.kube.Get(e.ctx, types.NamespacedName{Namespace: ns, Name: "files"}, &b)
-	return apierrors.IsNotFound(err)
-}
-
-func TestDeleteRetainKeepsBucket(t *testing.T) {
-	e := newEnv(t, newBucket())
-	e.mustReconcile()
-	sa := email(e)
+func TestBucketDeleteRetainKeepsBucketAndRevokes(t *testing.T) {
+	e := newEnv(t, newIdentity("app"), newBucket(withAccess("app")))
+	e.mustReconcileIdentity("app")
+	e.mustReconcileBucket()
 	e.cloud.AddObjects(wantBucket, 3)
 
-	e.delete()
-	e.mustReconcile()
+	e.delete("files", &cloudv1alpha1.Bucket{})
+	e.mustReconcileBucket()
 
-	if !e.gone() {
+	if !e.gone("files", &cloudv1alpha1.Bucket{}) {
 		t.Error("Bucket object still exists")
 	}
 	if !e.cloud.HasBucket(wantBucket) {
 		t.Error("Retain deleted the cloud bucket")
 	}
-	if e.cloud.HasAccount(sa) {
-		t.Error("service account not deleted")
+	if bs := e.cloud.Bindings(wantBucket); len(bs) != 0 {
+		t.Errorf("bindings left on a retained bucket: %v", bs)
+	}
+	if !e.cloud.HasAccount(e.getIdentity("app").Status.ServiceAccount) {
+		t.Error("deleting a Bucket must not delete the Identity's service account")
 	}
 }
 
-func TestDeletePolicyWaitsUntilEmpty(t *testing.T) {
-	e := newEnv(t, newBucket(func(b *cloudv1alpha1.Bucket) { b.Spec.DeletionPolicy = cloudv1alpha1.DeletionPolicyDelete }))
-	e.mustReconcile()
+func TestBucketDeletePolicyWaitsUntilEmpty(t *testing.T) {
+	e := newEnv(t, newBucket(withPolicy(cloudv1alpha1.DeletionPolicyDelete)))
+	e.mustReconcileBucket()
 	e.cloud.AddObjects(wantBucket, 1)
 
-	e.delete()
-	res := e.mustReconcile()
-	if res.RequeueAfter != e.r.Recheck {
-		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, e.r.Recheck)
+	e.delete("files", &cloudv1alpha1.Bucket{})
+	if res := e.mustReconcileBucket(); res.RequeueAfter != recheck {
+		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, recheck)
 	}
-	if e.gone() || !e.cloud.HasBucket(wantBucket) {
+	if e.gone("files", &cloudv1alpha1.Bucket{}) || !e.cloud.HasBucket(wantBucket) {
 		t.Fatal("deleted a bucket that is not empty")
 	}
-	if c := ready(e.bucket()); c.Reason != "DeletionBlocked" {
-		t.Errorf("reason = %s", c.Reason)
+	if e.bucketReason() != "DeletionBlocked" {
+		t.Errorf("reason = %s", e.bucketReason())
 	}
 
 	e.cloud.AddObjects(wantBucket, -1)
-	e.mustReconcile()
-	if !e.gone() || e.cloud.HasBucket(wantBucket) {
+	e.mustReconcileBucket()
+	if !e.gone("files", &cloudv1alpha1.Bucket{}) || e.cloud.HasBucket(wantBucket) {
 		t.Error("empty bucket not deleted")
 	}
 }
 
-func TestDeletePolicyNeverDeletesForeignBucket(t *testing.T) {
-	e := newEnv(t, newBucket(func(b *cloudv1alpha1.Bucket) {
+func TestBucketDeleteNeverTouchesForeignBucket(t *testing.T) {
+	e := newEnv(t, newBucket(withPolicy(cloudv1alpha1.DeletionPolicyDelete), func(b *cloudv1alpha1.Bucket) {
 		b.Spec.BucketName = "theirs"
-		b.Spec.DeletionPolicy = cloudv1alpha1.DeletionPolicyDelete
 	}))
 	if err := e.cloud.CreateBucket(e.ctx, cloud.BucketSpec{Name: "theirs", Location: "EU"}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = e.reconcile() // conflict, but the finalizer is on
+	_, _ = e.reconcileBucket() // conflict, but the finalizer is on
 
-	e.delete()
-	e.mustReconcile()
-	if !e.gone() {
+	e.delete("files", &cloudv1alpha1.Bucket{})
+	e.mustReconcileBucket()
+	if !e.gone("files", &cloudv1alpha1.Bucket{}) {
 		t.Error("Bucket object still exists")
 	}
 	if !e.cloud.HasBucket("theirs") {
@@ -412,14 +396,30 @@ func TestDeletePolicyNeverDeletesForeignBucket(t *testing.T) {
 	}
 }
 
-func TestDeleteWithoutCloudResources(t *testing.T) {
-	e := newEnv(t, newBucket(func(b *cloudv1alpha1.Bucket) {
+func TestBucketDeleteBeforeProvisioning(t *testing.T) {
+	e := newEnv(t, newBucket(withPolicy(cloudv1alpha1.DeletionPolicyDelete), func(b *cloudv1alpha1.Bucket) {
 		b.Finalizers = []string{Finalizer}
-		b.Spec.DeletionPolicy = cloudv1alpha1.DeletionPolicyDelete
 	}))
-	e.delete()
-	e.mustReconcile()
-	if !e.gone() {
+	e.delete("files", &cloudv1alpha1.Bucket{})
+	e.mustReconcileBucket()
+	if !e.gone("files", &cloudv1alpha1.Bucket{}) {
 		t.Error("Bucket object still exists")
+	}
+}
+
+func TestBucketsForIdentity(t *testing.T) {
+	other := newBucket(func(b *cloudv1alpha1.Bucket) {
+		b.Name, b.UID = "other", "uid-other"
+		b.Spec.Access = []cloudv1alpha1.BucketAccess{{IdentityRef: "someone-else"}}
+	})
+	elsewhere := newBucket(withAccess("app"), func(b *cloudv1alpha1.Bucket) {
+		b.Namespace, b.UID = "elsewhere", "uid-elsewhere"
+	})
+	e := newEnv(t, newBucket(withAccess("app")), other, elsewhere)
+
+	got := e.bucket.bucketsForIdentity(e.ctx, newIdentity("app"))
+	want := []reconcile.Request{req("files")}
+	if !slices.Equal(got, want) {
+		t.Errorf("bucketsForIdentity = %v, want %v", got, want)
 	}
 }

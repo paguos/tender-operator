@@ -47,6 +47,8 @@ type Provider interface {
 	DeleteBucket(ctx context.Context, name string) error
 	// GrantBucketRole adds member to role on the bucket's IAM policy.
 	GrantBucketRole(ctx context.Context, bucket, role, member string) error
+	// RevokeBucketRole removes member from role; a missing binding is not an error.
+	RevokeBucketRole(ctx context.Context, bucket, role, member string) error
 
 	// EnsureServiceAccount creates the account if needed and returns its email.
 	EnsureServiceAccount(ctx context.Context, accountID, displayName string) (string, error)

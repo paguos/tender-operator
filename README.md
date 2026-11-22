@@ -2,9 +2,20 @@
 
 A small Kubernetes operator that supplies apps with Google Cloud resources, declared next to the app's own manifests.
 
-Today it manages one kind, `Bucket`: a Cloud Storage bucket plus a service account that can use it, with a key delivered as a Secret in the app's namespace. More kinds (one controller each, same binary) can follow.
+Two kinds today, one controller each in the same binary:
+
+- **`Identity`**: a Google service account for an app, with its key delivered as a Secret in the app's namespace.
+- **`Bucket`**: a Cloud Storage bucket, plus access for the Identities it lists.
+
+An app usually has one Identity, and every resource it uses grants access to it. More kinds can follow the same pattern.
 
 ```yaml
+apiVersion: cloud.paguos.dev/v1alpha1
+kind: Identity
+metadata:
+  name: my-app
+  namespace: my-app
+---
 apiVersion: cloud.paguos.dev/v1alpha1
 kind: Bucket
 metadata:
@@ -12,17 +23,25 @@ metadata:
   namespace: my-app
 spec:
   location: EU
+  access:
+    - identityRef: my-app        # an Identity in the same namespace
+      role: objectAdmin          # objectViewer | objectCreator | objectAdmin (default)
 ```
 
 That gives you:
 
 | What | Name |
 |---|---|
+| Service account | `<prefix>-<namespace>-<name>-<hash>@<project>.iam.gserviceaccount.com` (shortened to fit 30 chars) |
+| Secret `my-app-gcp` | `credentials.json` (the key), `SERVICE_ACCOUNT_EMAIL`, `GCP_PROJECT` |
 | Bucket (uniform access, public access prevented) | `<prefix>-<namespace>-<name>`, e.g. `tender-my-app-files` |
-| Service account with `roles/storage.objectAdmin` on that bucket only | `<prefix>-<namespace>-<name>-<hash>@<project>.iam.gserviceaccount.com` (shortened to fit 30 chars) |
-| Secret `files-gcs` in `my-app` | `credentials.json` (the key), `BUCKET_NAME`, `GCP_PROJECT` |
+| IAM binding on the bucket | `roles/storage.objectAdmin` for the Identity's service account |
+| ConfigMap `files-bucket` | `BUCKET_NAME`, `BUCKET_URL`, `GCP_PROJECT` |
 
 ```console
+$ kubectl get identities -n my-app
+NAME     SERVICE ACCOUNT                                                  READY   AGE
+my-app   tender-my-app-my-app-1a2b3c4d@my-project.iam.gserviceaccount.com   True    1m
 $ kubectl get buckets -n my-app
 NAME    BUCKET                READY   AGE
 files   tender-my-app-files   True    1m
@@ -33,17 +52,25 @@ Use it in a Pod:
 ```yaml
 env:
   - name: BUCKET_NAME
-    valueFrom: { secretKeyRef: { name: files-gcs, key: BUCKET_NAME } }
+    valueFrom: { configMapKeyRef: { name: files-bucket, key: BUCKET_NAME } }
   - name: GOOGLE_APPLICATION_CREDENTIALS
-    value: /var/run/secrets/gcs/credentials.json
+    value: /var/run/secrets/gcp/credentials.json
 volumeMounts:
-  - { name: gcs, mountPath: /var/run/secrets/gcs, readOnly: true }
+  - { name: gcp, mountPath: /var/run/secrets/gcp, readOnly: true }
 # volumes:
-#   - name: gcs
-#     secret: { secretName: files-gcs }
+#   - name: gcp
+#     secret: { secretName: my-app-gcp }
 ```
 
 ## Spec
+
+### Identity
+
+| Field | Default | Notes |
+|---|---|---|
+| `credentialsSecret` | `<name>-gcp` | Immutable. |
+
+### Bucket
 
 | Field | Default | Notes |
 |---|---|---|
@@ -51,14 +78,17 @@ volumeMounts:
 | `storageClass` | `STANDARD` | `STANDARD`, `NEARLINE`, `COLDLINE`, `ARCHIVE` |
 | `bucketName` | generated | Bucket names are global. Immutable. |
 | `deletionPolicy` | `Retain` | `Delete` removes the bucket only once it's empty. A bucket with objects blocks deletion (condition reason `DeletionBlocked`) until you empty it. |
-| `credentialsSecret` | `<name>-gcs` | Immutable. |
+| `access[].identityRef` | | An Identity in the same namespace. References never cross namespaces. |
+| `access[].role` | `objectAdmin` | `objectViewer`, `objectCreator` or `objectAdmin` (the `roles/storage.*` roles). One role per Identity. |
 
 ## Behaviour
 
-- **Reconcile:** creates what's missing and resets drift (storage class, labels, IAM binding). Ready buckets are rechecked every `--resync` (10m).
-- **Ownership:** buckets carry the labels `managed-by=tender`, `namespace` and `name`. tender refuses to adopt a bucket without them (reason `BucketConflict`), and never deletes one. It also refuses to overwrite a Secret it doesn't own (reason `SecretConflict`).
-- **Keys:** one key per Bucket. The Secret records its ID in the `cloud.paguos.dev/key-id` annotation. If the Secret is deleted or the key is revoked, tender creates a new key, then deletes every other key of that service account. To rotate, delete the Secret.
-- **Deletion:** the service account (and its keys) is always deleted. The Secret is owned by the Bucket and garbage-collected. What happens to the bucket depends on `deletionPolicy`.
+- **Reconcile:** creates what's missing and resets drift (storage class, labels, IAM bindings). Ready objects are rechecked every `--resync` (10m).
+- **Access:** a Bucket grants each listed Identity its role and records what it granted in `status.bindings`. Bindings it granted that leave `access` are revoked. Bindings tender didn't grant are never touched. While a referenced Identity is missing or not ready, the bucket still exists but no access changes are made (reasons `IdentityNotFound`, `IdentityNotReady`). The Bucket picks up the change as soon as the Identity becomes ready.
+- **Ownership:** buckets carry the labels `managed-by=tender`, `namespace` and `name`. tender refuses to adopt a bucket without them (reason `BucketConflict`), and never changes or deletes one. It also refuses to overwrite a Secret or ConfigMap it doesn't own (`SecretConflict`, `ConfigMapConflict`).
+- **Keys:** one key per Identity. The Secret records its ID in the `cloud.paguos.dev/key-id` annotation. If the Secret is deleted or the key is revoked, tender creates a new key, then deletes every other key of that service account. To rotate, delete the Secret.
+- **Deleting an Identity** deletes its service account and keys. Its Secret is garbage-collected. Buckets that still reference it go to `IdentityNotFound`.
+- **Deleting a Bucket** depends on `deletionPolicy`. `Retain` keeps the bucket and revokes the bindings tender granted. `Delete` removes the bucket once it's empty. The ConfigMap is garbage-collected.
 
 ## Install
 

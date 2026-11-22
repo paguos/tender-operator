@@ -15,9 +15,33 @@ const (
 	DeletionPolicyDelete DeletionPolicy = "Delete"
 )
 
+// BucketRole is a level of access to a bucket's objects.
+// +kubebuilder:validation:Enum=objectViewer;objectCreator;objectAdmin
+type BucketRole string
+
+const (
+	BucketRoleObjectViewer  BucketRole = "objectViewer"
+	BucketRoleObjectCreator BucketRole = "objectCreator"
+	BucketRoleObjectAdmin   BucketRole = "objectAdmin"
+)
+
+// IAMRole returns the Google Cloud role, e.g. roles/storage.objectAdmin.
+func (r BucketRole) IAMRole() string { return "roles/storage." + string(r) }
+
+// BucketAccess grants an Identity in the same namespace a role on the bucket.
+type BucketAccess struct {
+	// IdentityRef is the name of an Identity in this namespace.
+	// +kubebuilder:validation:MinLength=1
+	IdentityRef string `json:"identityRef"`
+
+	// Role on the bucket's objects.
+	// +kubebuilder:default=objectAdmin
+	// +optional
+	Role BucketRole `json:"role,omitempty"`
+}
+
 // BucketSpec is the desired state of a Bucket.
 // +kubebuilder:validation:XValidation:rule="has(self.bucketName) == has(oldSelf.bucketName) && (!has(self.bucketName) || self.bucketName == oldSelf.bucketName)",message="bucketName is immutable"
-// +kubebuilder:validation:XValidation:rule="has(self.credentialsSecret) == has(oldSelf.credentialsSecret) && (!has(self.credentialsSecret) || self.credentialsSecret == oldSelf.credentialsSecret)",message="credentialsSecret is immutable"
 type BucketSpec struct {
 	// Location of the bucket, e.g. EU, US or europe-west3. Immutable.
 	// +kubebuilder:validation:MinLength=1
@@ -46,12 +70,18 @@ type BucketSpec struct {
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 
-	// CredentialsSecret is the name of the Secret, in this namespace, that
-	// receives a service-account key with object admin access to this bucket.
-	// Defaults to "<name>-gcs". Immutable.
-	// +kubebuilder:validation:MinLength=1
+	// Access lists the Identities that may use the bucket. Bindings that tender
+	// granted earlier and that are no longer listed are removed.
+	// +listType=map
+	// +listMapKey=identityRef
 	// +optional
-	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+	Access []BucketAccess `json:"access,omitempty"`
+}
+
+// BucketBinding is an IAM binding tender granted on the bucket.
+type BucketBinding struct {
+	Role   string `json:"role"`
+	Member string `json:"member"`
 }
 
 // BucketStatus is the observed state of a Bucket.
@@ -64,9 +94,10 @@ type BucketStatus struct {
 	// +optional
 	URL string `json:"url,omitempty"`
 
-	// ServiceAccount is the email of the service account that can use the bucket.
+	// Bindings are the IAM bindings tender granted, so it can remove them
+	// when they leave spec.access.
 	// +optional
-	ServiceAccount string `json:"serviceAccount,omitempty"`
+	Bindings []BucketBinding `json:"bindings,omitempty"`
 
 	// ObservedGeneration is the generation the status was computed for.
 	// +optional
@@ -79,7 +110,7 @@ type BucketStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// Bucket is a Google Cloud Storage bucket plus credentials for using it.
+// Bucket is a Google Cloud Storage bucket, plus access for Identities.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Bucket",type=string,JSONPath=`.status.bucketName`
@@ -105,10 +136,5 @@ func init() {
 	SchemeBuilder.Register(&Bucket{}, &BucketList{})
 }
 
-// SecretName returns the name of the credentials Secret.
-func (b *Bucket) SecretName() string {
-	if b.Spec.CredentialsSecret != "" {
-		return b.Spec.CredentialsSecret
-	}
-	return b.Name + "-gcs"
-}
+// ConfigMapName returns the name of the ConfigMap with the bucket's details.
+func (b *Bucket) ConfigMapName() string { return b.Name + "-bucket" }

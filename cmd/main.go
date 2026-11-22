@@ -59,9 +59,10 @@ func main() {
 		HealthProbeBindAddress: *probeAddr,
 		LeaderElection:         *leaderElect,
 		LeaderElectionID:       "tender.cloud.paguos.dev",
-		// Only cache the Secrets tender writes, not every Secret in the cluster.
+		// Only cache the Secrets and ConfigMaps tender writes, not every one in the cluster.
 		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
-			&corev1.Secret{}: {Label: managed},
+			&corev1.Secret{}:    {Label: managed},
+			&corev1.ConfigMap{}: {Label: managed},
 		}},
 	})
 	if err != nil {
@@ -73,6 +74,18 @@ func main() {
 	provider, err := gcp.New(ctx, *project)
 	if err != nil {
 		log.Error(err, "create GCP clients")
+		os.Exit(1)
+	}
+
+	if err := (&controller.IdentityReconciler{
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Cloud:   provider,
+		Project: *project,
+		Prefix:  *prefix,
+		Resync:  *resync,
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "set up identity controller")
 		os.Exit(1)
 	}
 
