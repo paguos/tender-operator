@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/paguos/tender-operator/compare/v0.2.1...v0.3.0) (2026-11-22)
+
+
+### Features
+
+* expose Prometheus metrics for resources and cloud calls ([#7](https://github.com/paguos/tender-operator/issues/7)) ([1113ef1](https://github.com/paguos/tender-operator/commit/1113ef1a46ce8e07cf18dfdd9814c5ce081b5eba))
+
 ## [0.2.1](https://github.com/paguos/tender-operator/compare/v0.2.0...v0.2.1) (2026-11-22)
 
 
