@@ -134,9 +134,36 @@ Images: `ghcr.io/paguos/tender-operator:<version>` (linux/amd64, linux/arm64, di
 | `--project` | `TENDER_PROJECT` | required |
 | `--name-prefix` | `TENDER_NAME_PREFIX` | `tender` |
 | `--resync` | | `10m` |
-| `--metrics-bind-address` | | `0` (off) |
+| `--metrics-bind-address` | | `0` (off; the install sets `:8080`) |
 | `--health-probe-bind-address` | | `:8081` |
 | `--leader-elect` | | `false` |
+
+## Metrics
+
+The install serves Prometheus metrics on Service `tender-metrics`, port `metrics` (8080, plain HTTP, path `/metrics`). With the Prometheus Operator:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tender
+  namespace: tender-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tender
+  endpoints:
+    - port: metrics
+```
+
+Besides controller-runtime's own (`controller_runtime_reconcile_*`, `workqueue_*`, Go and process metrics):
+
+| Metric | Labels | |
+|---|---|---|
+| `tender_resource_ready` | `kind`, `namespace`, `name`, `reason` | 1 if the Ready condition is True, else 0; `reason` is the condition's reason (`Pending` before the first reconcile) |
+| `tender_bucket_bindings` | `namespace`, `name` | IAM bindings tender holds on the bucket |
+| `tender_cloud_requests_total` | `operation`, `result` | calls to the cloud provider; `result` is `ok`, `not_found` or `error` |
+| `tender_cloud_request_duration_seconds` | `operation` | their latency (histogram) |
 
 ## Security
 
@@ -164,6 +191,7 @@ api/v1alpha1/        API types (one file per kind)
 cmd/                 the manager
 internal/cloud/      Provider interface, gcp/ implementation, fake/ for tests
 internal/controller/ one reconciler per kind
+internal/metrics/    Prometheus metrics (resource state, instrumented provider)
 internal/naming/     valid, stable cloud names
 config/              CRD, RBAC and Deployment (Kustomize); default/ is the install
 ```

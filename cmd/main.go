@@ -19,6 +19,7 @@ import (
 	cloudv1alpha1 "github.com/paguos/tender-operator/api/v1alpha1"
 	"github.com/paguos/tender-operator/internal/cloud/gcp"
 	"github.com/paguos/tender-operator/internal/controller"
+	"github.com/paguos/tender-operator/internal/metrics"
 )
 
 // Leader election (--leader-elect) needs leases.
@@ -71,11 +72,13 @@ func main() {
 	}
 
 	ctx := ctrl.SetupSignalHandler()
-	provider, err := gcp.New(ctx, *project)
+	gcpProvider, err := gcp.New(ctx, *project)
 	if err != nil {
 		log.Error(err, "create GCP clients")
 		os.Exit(1)
 	}
+	provider := metrics.Instrument(gcpProvider)
+	must(metrics.Register(mgr.GetCache()))
 
 	if err := (&controller.IdentityReconciler{
 		Client:  mgr.GetClient(),
