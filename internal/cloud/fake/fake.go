@@ -155,6 +155,20 @@ func (p *Provider) GrantBucketRole(_ context.Context, name, role, member string)
 	return nil
 }
 
+func (p *Provider) RevokeBucketRole(_ context.Context, name, role, member string) error {
+	unlock, err := p.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	b, ok := p.buckets[name]
+	if !ok {
+		return notFound("bucket", name)
+	}
+	b.bindings[role] = slices.DeleteFunc(b.bindings[role], func(m string) bool { return m == member })
+	return nil
+}
+
 func (p *Provider) email(accountID string) string {
 	return fmt.Sprintf("%s@%s.iam.gserviceaccount.com", accountID, p.Project)
 }
@@ -251,6 +265,21 @@ func (p *Provider) HasBucket(name string) bool {
 	defer p.mu.Unlock()
 	_, ok := p.buckets[name]
 	return ok
+}
+
+// Bindings returns the bucket's non-empty bindings, role -> members.
+func (p *Provider) Bindings(name string) map[string][]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := map[string][]string{}
+	if b, ok := p.buckets[name]; ok {
+		for r, m := range b.bindings {
+			if len(m) > 0 {
+				out[r] = slices.Clone(m)
+			}
+		}
+	}
+	return out
 }
 
 // Members returns the members bound to role on the bucket.

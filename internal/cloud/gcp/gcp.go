@@ -123,6 +123,32 @@ func (p *Provider) GrantBucketRole(ctx context.Context, bucket, role, member str
 	return p.setPolicy(ctx, bucket, policy)
 }
 
+func (p *Provider) RevokeBucketRole(ctx context.Context, bucket, role, member string) error {
+	policy, err := p.storage.Buckets.GetIamPolicy(bucket).Context(ctx).Do()
+	if err != nil {
+		return mapErr(err)
+	}
+	changed := false
+	kept := policy.Bindings[:0]
+	for _, b := range policy.Bindings {
+		if b.Role == role && b.Condition == nil {
+			if i := slices.Index(b.Members, member); i >= 0 {
+				b.Members = slices.Delete(b.Members, i, i+1)
+				changed = true
+			}
+			if len(b.Members) == 0 {
+				continue
+			}
+		}
+		kept = append(kept, b)
+	}
+	if !changed {
+		return nil
+	}
+	policy.Bindings = kept
+	return p.setPolicy(ctx, bucket, policy)
+}
+
 // setPolicy writes the policy back with its etag, so concurrent edits fail
 // instead of being overwritten (the reconcile then retries).
 func (p *Provider) setPolicy(ctx context.Context, bucket string, policy *gcs.Policy) error {

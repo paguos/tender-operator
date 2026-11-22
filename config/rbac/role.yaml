@@ -7,6 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
   - secrets
   verbs:
   - create
@@ -19,6 +20,7 @@ rules:
   - cloud.paguos.dev
   resources:
   - buckets
+  - identities
   verbs:
   - get
   - list
@@ -29,12 +31,14 @@ rules:
   - cloud.paguos.dev
   resources:
   - buckets/finalizers
+  - identities/finalizers
   verbs:
   - update
 - apiGroups:
   - cloud.paguos.dev
   resources:
   - buckets/status
+  - identities/status
   verbs:
   - get
   - patch

@@ -27,8 +27,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Bucket is a Google Cloud Storage bucket plus credentials for
-          using it.
+        description: Bucket is a Google Cloud Storage bucket, plus access for Identities.
         properties:
           apiVersion:
             description: |-
@@ -50,6 +49,34 @@ spec:
           spec:
             description: BucketSpec is the desired state of a Bucket.
             properties:
+              access:
+                description: |-
+                  Access lists the Identities that may use the bucket. Bindings that tender
+                  granted earlier and that are no longer listed are removed.
+                items:
+                  description: BucketAccess grants an Identity in the same namespace
+                    a role on the bucket.
+                  properties:
+                    identityRef:
+                      description: IdentityRef is the name of an Identity in this
+                        namespace.
+                      minLength: 1
+                      type: string
+                    role:
+                      default: objectAdmin
+                      description: Role on the bucket's objects.
+                      enum:
+                      - objectViewer
+                      - objectCreator
+                      - objectAdmin
+                      type: string
+                  required:
+                  - identityRef
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - identityRef
+                x-kubernetes-list-type: map
               bucketName:
                 description: |-
                   BucketName overrides the generated bucket name. Bucket names are global,
@@ -58,13 +85,6 @@ spec:
                 maxLength: 63
                 minLength: 3
                 pattern: ^[a-z0-9][a-z0-9_.-]*[a-z0-9]$
-                type: string
-              credentialsSecret:
-                description: |-
-                  CredentialsSecret is the name of the Secret, in this namespace, that
-                  receives a service-account key with object admin access to this bucket.
-                  Defaults to "<name>-gcs". Immutable.
-                minLength: 1
                 type: string
               deletionPolicy:
                 default: Retain
@@ -100,12 +120,26 @@ spec:
             - message: bucketName is immutable
               rule: has(self.bucketName) == has(oldSelf.bucketName) && (!has(self.bucketName)
                 || self.bucketName == oldSelf.bucketName)
-            - message: credentialsSecret is immutable
-              rule: has(self.credentialsSecret) == has(oldSelf.credentialsSecret)
-                && (!has(self.credentialsSecret) || self.credentialsSecret == oldSelf.credentialsSecret)
           status:
             description: BucketStatus is the observed state of a Bucket.
             properties:
+              bindings:
+                description: |-
+                  Bindings are the IAM bindings tender granted, so it can remove them
+                  when they leave spec.access.
+                items:
+                  description: BucketBinding is an IAM binding tender granted on the
+                    bucket.
+                  properties:
+                    member:
+                      type: string
+                    role:
+                      type: string
+                  required:
+                  - member
+                  - role
+                  type: object
+                type: array
               bucketName:
                 description: BucketName is the name of the cloud bucket.
                 type: string
@@ -174,10 +208,6 @@ spec:
                   for.
                 format: int64
                 type: integer
-              serviceAccount:
-                description: ServiceAccount is the email of the service account that
-                  can use the bucket.
-                type: string
               url:
                 description: URL of the bucket (gs://...).
                 type: string

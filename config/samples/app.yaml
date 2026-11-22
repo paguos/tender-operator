@@ -1,0 +1,20 @@
+apiVersion: cloud.paguos.dev/v1alpha1
+kind: Identity
+metadata:
+  name: my-app
+  namespace: my-app
+# spec:
+#   credentialsSecret: my-app-gcp
+---
+apiVersion: cloud.paguos.dev/v1alpha1
+kind: Bucket
+metadata:
+  name: files
+  namespace: my-app
+spec:
+  location: EU
+  # storageClass: STANDARD
+  # deletionPolicy: Retain     # or Delete (only removes an empty bucket)
+  access:
+    - identityRef: my-app
+      role: objectAdmin        # objectViewer | objectCreator | objectAdmin
