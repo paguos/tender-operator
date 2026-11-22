@@ -40,6 +40,7 @@ spec:
           image: tender
           args:
             - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
           env:
             - name: TENDER_PROJECT
               valueFrom:
@@ -58,6 +59,8 @@ spec:
           ports:
             - name: probes
               containerPort: 8081
+            - name: metrics
+              containerPort: 8080
           livenessProbe:
             httpGet: { path: /healthz, port: probes }
             initialDelaySeconds: 10
@@ -75,3 +78,18 @@ spec:
         - name: gcp-credentials
           secret:
             secretName: tender-gcp-credentials
+---
+# Prometheus metrics (plain HTTP). Scrape it with a ServiceMonitor, see README.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tender-metrics
+  labels:
+    app.kubernetes.io/name: tender
+spec:
+  selector:
+    app.kubernetes.io/name: tender
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
