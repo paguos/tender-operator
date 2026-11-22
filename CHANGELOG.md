@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/paguos/tender-operator/compare/v0.1.0...v0.2.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* Bucket.spec.credentialsSecret and the <name>-gcs Secret are gone. Create an Identity and list it under spec.access instead.
+
+### Features
+
+* split service accounts into an Identity kind ([#3](https://github.com/paguos/tender-operator/issues/3)) ([a863fd0](https://github.com/paguos/tender-operator/commit/a863fd08a84fad07297ee1a24df89752f37d7e2d))
+
 ## 0.1.0 (2026-11-22)
 
 
