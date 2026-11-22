@@ -60,9 +60,13 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
+	// Status is written as a merge patch against this snapshot: it doesn't
+	// carry a resourceVersion, so it can't conflict with other writers.
+	base := b.DeepCopy()
+
 	if err := r.reconcile(ctx, &b); err != nil {
 		setReady(&b.Status.Conditions, b.Generation, metav1.ConditionFalse, reason(err), err.Error())
-		if uerr := r.Status().Update(ctx, &b); uerr != nil {
+		if uerr := r.Status().Patch(ctx, &b, client.MergeFrom(base)); uerr != nil {
 			log.FromContext(ctx).Error(uerr, "update status")
 		}
 		// A missing or unready Identity is not a failure of ours: wait for it
@@ -75,7 +79,7 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	setReady(&b.Status.Conditions, b.Generation, metav1.ConditionTrue, "Provisioned", "bucket and access are ready")
 	b.Status.ObservedGeneration = b.Generation
-	if err := r.Status().Update(ctx, &b); err != nil {
+	if err := r.Status().Patch(ctx, &b, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: r.Resync}, nil
@@ -284,9 +288,10 @@ func (r *BucketReconciler) cleanUp(ctx context.Context, b *cloudv1alpha1.Bucket,
 			return false, fmt.Errorf("check bucket: %w", err)
 		}
 		if !empty {
+			base := b.DeepCopy()
 			setReady(&b.Status.Conditions, b.Generation, metav1.ConditionFalse, "DeletionBlocked",
 				fmt.Sprintf("bucket %s is not empty; empty it to finish deleting", name))
-			return false, r.Status().Update(ctx, b)
+			return false, r.Status().Patch(ctx, b, client.MergeFrom(base))
 		}
 		if err := r.Cloud.DeleteBucket(ctx, name); err != nil && !errors.Is(err, cloud.ErrNotFound) {
 			return false, fmt.Errorf("delete bucket: %w", err)
