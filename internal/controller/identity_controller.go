@@ -53,9 +53,13 @@ func (r *IdentityReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	// Status is written as a merge patch against this snapshot: it doesn't
+	// carry a resourceVersion, so it can't conflict with other writers.
+	base := id.DeepCopy()
+
 	if err := r.reconcile(ctx, &id); err != nil {
 		setReady(&id.Status.Conditions, id.Generation, metav1.ConditionFalse, reason(err), err.Error())
-		if uerr := r.Status().Update(ctx, &id); uerr != nil {
+		if uerr := r.Status().Patch(ctx, &id, client.MergeFrom(base)); uerr != nil {
 			log.FromContext(ctx).Error(uerr, "update status")
 		}
 		return ctrl.Result{}, err
@@ -63,7 +67,7 @@ func (r *IdentityReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	setReady(&id.Status.Conditions, id.Generation, metav1.ConditionTrue, "Provisioned", "service account and credentials are ready")
 	id.Status.ObservedGeneration = id.Generation
-	if err := r.Status().Update(ctx, &id); err != nil {
+	if err := r.Status().Patch(ctx, &id, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: r.Resync}, nil

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1alpha1 "github.com/paguos/tender-operator/api/v1alpha1"
@@ -421,5 +424,37 @@ func TestBucketsForIdentity(t *testing.T) {
 	want := []reconcile.Request{req("files")}
 	if !slices.Equal(got, want) {
 		t.Errorf("bucketsForIdentity = %v, want %v", got, want)
+	}
+}
+
+// Someone else changes the Bucket while a reconcile is running. The status
+// write must not fail with a conflict (it used to, with Status().Update).
+func TestBucketStatusSurvivesConcurrentChange(t *testing.T) {
+	e := newEnv(t, newBucket())
+	e.mustReconcileBucket() // finalizer on, so the next reconcile does no Update
+
+	changed := false
+	e.bucket.Client = interceptor.NewClient(e.kube.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if _, ok := obj.(*cloudv1alpha1.Bucket); ok && !changed {
+				changed = true
+				other := obj.DeepCopyObject().(*cloudv1alpha1.Bucket)
+				other.Annotations = map[string]string{"touched": "yes"}
+				return c.Update(ctx, other)
+			}
+			return nil
+		},
+	})
+
+	e.mustReconcileBucket()
+	b := e.getBucket()
+	if b.Annotations["touched"] != "yes" {
+		t.Fatal("the concurrent change did not happen")
+	}
+	if c := readyOf(b.Status.Conditions); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %+v", c)
 	}
 }
