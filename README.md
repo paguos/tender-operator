@@ -141,7 +141,13 @@ To let Identities ask for project roles, list the roles in `allowed-project-role
 gcloud projects add-iam-policy-binding $PROJECT \
   --member "serviceAccount:tender@$PROJECT.iam.gserviceaccount.com" \
   --role roles/resourcemanager.projectIamAdmin \
-  --condition "title=tender-project-roles,expression=api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/aiplatform.user'])"
+  --condition-from-file condition.yaml
+```
+
+```yaml
+# condition.yaml. Pass it as a file: gcloud splits --condition on commas, and the expression has one.
+title: tender-project-roles
+expression: api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/aiplatform.user'])
 ```
 
 Keep the roles in one `hasOnly` list (Google's docs warn against chaining conditions), and update it whenever the allow list changes.
