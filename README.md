@@ -124,7 +124,7 @@ Then install with Kustomize, pinned to a release:
 ```yaml
 # kustomization.yaml
 resources:
-  - https://github.com/paguos/tender-operator//config/default?ref=v0.3.0
+  - https://github.com/paguos/tender-operator//config/default?ref=v0.4.0
 configMapGenerator:
   - name: tender-config
     namespace: tender-system
