@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/paguos/tender-operator/compare/v0.3.0...v0.4.0) (2026-11-28)
+
+
+### Features
+
+* grant project roles to Identities from an allow list ([#9](https://github.com/paguos/tender-operator/issues/9)) ([1a3ac69](https://github.com/paguos/tender-operator/commit/1a3ac697401d74ea541f957f19c6cb33d7a8d243))
+
 ## [0.3.0](https://github.com/paguos/tender-operator/compare/v0.2.1...v0.3.0) (2026-11-22)
 
 
