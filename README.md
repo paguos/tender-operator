@@ -4,7 +4,7 @@ A small Kubernetes operator that supplies apps with Google Cloud resources, decl
 
 Two kinds today, one controller each in the same binary:
 
-- **`Identity`**: a Google service account for an app, with its key delivered as a Secret in the app's namespace.
+- **`Identity`**: a Google service account for an app, with its key delivered as a Secret in the app's namespace, and optionally a few project roles (such as Vertex AI access) from an allow list.
 - **`Bucket`**: a Cloud Storage bucket, plus access for the Identities it lists.
 
 An app usually has one Identity, and every resource it uses grants access to it. More kinds can follow the same pattern.
@@ -69,6 +69,17 @@ volumeMounts:
 | Field | Default | Notes |
 |---|---|---|
 | `credentialsSecret` | `<name>-gcp` | Immutable. |
+| `projectRoles` | none | Predefined roles granted on the whole project, e.g. `roles/aiplatform.user`. Up to 10. Only roles on the operator's allow list (`--allowed-project-roles`) are granted. |
+
+```yaml
+apiVersion: cloud.paguos.dev/v1alpha1
+kind: Identity
+metadata:
+  name: my-app
+spec:
+  projectRoles:
+    - roles/aiplatform.user
+```
 
 ### Bucket
 
@@ -87,7 +98,8 @@ volumeMounts:
 - **Access:** a Bucket grants each listed Identity its role and records what it granted in `status.bindings`. Bindings it granted that leave `access` are revoked. Bindings tender didn't grant are never touched. While a referenced Identity is missing or not ready, the bucket still exists but no access changes are made (reasons `IdentityNotFound`, `IdentityNotReady`). The Bucket picks up the change as soon as the Identity becomes ready.
 - **Ownership:** buckets carry the labels `managed-by=tender`, `namespace` and `name`. tender refuses to adopt a bucket without them (reason `BucketConflict`), and never changes or deletes one. It also refuses to overwrite a Secret or ConfigMap it doesn't own (`SecretConflict`, `ConfigMapConflict`).
 - **Keys:** one key per Identity. The Secret records its ID in the `cloud.paguos.dev/key-id` annotation. If the Secret is deleted or the key is revoked, tender creates a new key, then deletes every other key of that service account. To rotate, delete the Secret.
-- **Deleting an Identity** deletes its service account and keys. Its Secret is garbage-collected. Buckets that still reference it go to `IdentityNotFound`.
+- **Project roles:** an Identity grants each role in `projectRoles` to its service account on the project, and records what it granted in `status.projectRoles`. Roles it granted that leave the list are revoked. Bindings tender didn't grant, and conditional bindings, are never touched. If the list names a role that isn't allowed, nothing is granted or revoked and Ready is False with reason `RoleNotAllowed`. With no allow list, no roles are allowed.
+- **Deleting an Identity** revokes the project roles it granted, then deletes its service account and keys. Its Secret is garbage-collected. Buckets that still reference it go to `IdentityNotFound`.
 - **Deleting a Bucket** depends on `deletionPolicy`. `Retain` keeps the bucket and revokes the bindings tender granted. `Delete` removes the bucket once it's empty. The ConfigMap is garbage-collected.
 
 ## Install
@@ -123,6 +135,17 @@ configMapGenerator:
 ```
 <!-- x-release-please-end -->
 
+To let Identities ask for project roles, list the roles in `allowed-project-roles` (comma-separated) and let tender grant exactly those. Use one conditional `projectIamAdmin` binding holding the same list, so tender's key can't grant anything else even if it leaks:
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member "serviceAccount:tender@$PROJECT.iam.gserviceaccount.com" \
+  --role roles/resourcemanager.projectIamAdmin \
+  --condition "title=tender-project-roles,expression=api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/aiplatform.user'])"
+```
+
+Keep the roles in one `hasOnly` list (Google's docs warn against chaining conditions), and update it whenever the allow list changes.
+
 and provide the key as Secret `tender-gcp-credentials` (key `credentials.json`) in `tender-system`, e.g. with `kubectl create secret generic tender-gcp-credentials -n tender-system --from-file=credentials.json`, or with External Secrets.
 
 Images: `ghcr.io/paguos/tender-operator:<version>` (linux/amd64, linux/arm64, distroless, non-root).
@@ -137,6 +160,7 @@ Images: `ghcr.io/paguos/tender-operator:<version>` (linux/amd64, linux/arm64, di
 | `--metrics-bind-address` | | `0` (off; the install sets `:8080`) |
 | `--health-probe-bind-address` | | `:8081` |
 | `--leader-elect` | | `false` |
+| `--allowed-project-roles` | `TENDER_ALLOWED_PROJECT_ROLES` | empty (no project roles) |
 
 ## Metrics
 
@@ -169,6 +193,8 @@ Besides controller-runtime's own (`controller_runtime_reconcile_*`, `workqueue_*
 
 The operator's service account can create service accounts and keys anywhere in its project, so it can act as any service account there. **Give tender its own project**, holding only the resources it manages, rather than a project that holds anything more privileged.
 
+Project roles widen what an app's key can do across the whole project. Keep the allow list short, and limit tender's own `projectIamAdmin` binding with the condition above.
+
 Organisations created since 2024 enforce `iam.disableServiceAccountKeyCreation` by default. Keys only work where that policy is off.
 
 ## Development
@@ -182,7 +208,7 @@ make image
 Tests need no cloud account:
 
 - `internal/cloud/fake` is an in-memory `cloud.Provider` (buckets, objects, IAM bindings, service accounts, keys). The controller tests run against it with controller-runtime's fake client.
-- The GCS half of the real provider (`internal/cloud/gcp`) is tested against [fake-gcs-server](https://github.com/fsouza/fake-gcs-server). IAM has no fake server, so that half is only covered through the in-memory provider.
+- The GCS half of the real provider (`internal/cloud/gcp`) is tested against [fake-gcs-server](https://github.com/fsouza/fake-gcs-server). IAM has no fake server: project IAM policy calls are tested against a small `httptest` handler, and service accounts and keys only through the in-memory provider.
 
 Layout:
 

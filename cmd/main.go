@@ -4,6 +4,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,7 @@ func main() {
 		metricsAddr = flag.String("metrics-bind-address", "0", "metrics address, e.g. :8080 (0 disables)")
 		probeAddr   = flag.String("health-probe-bind-address", ":8081", "health probe address")
 		leaderElect = flag.Bool("leader-elect", false, "enable leader election (only needed with more than one replica)")
+		roles       = flag.String("allowed-project-roles", os.Getenv("TENDER_ALLOWED_PROJECT_ROLES"), "comma-separated project roles Identities may ask for, e.g. roles/aiplatform.user (env TENDER_ALLOWED_PROJECT_ROLES; empty allows none)")
 	)
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
@@ -87,6 +89,8 @@ func main() {
 		Project: *project,
 		Prefix:  *prefix,
 		Resync:  *resync,
+
+		AllowedProjectRoles: splitList(*roles),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "set up identity controller")
 		os.Exit(1)
@@ -107,7 +111,7 @@ func main() {
 	must(mgr.AddHealthzCheck("healthz", healthz.Ping))
 	must(mgr.AddReadyzCheck("readyz", healthz.Ping))
 
-	log.Info("starting", "version", version, "project", *project, "prefix", *prefix)
+	log.Info("starting", "version", version, "project", *project, "prefix", *prefix, "allowedProjectRoles", splitList(*roles))
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager stopped")
 		os.Exit(1)
@@ -126,4 +130,15 @@ func must(err error) {
 		ctrl.Log.Error(err, "setup")
 		os.Exit(1)
 	}
+}
+
+// splitList splits a comma-separated list, dropping blanks.
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

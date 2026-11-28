@@ -182,3 +182,11 @@ func (i *instrumented) CreateKey(ctx context.Context, email string) (*cloud.Key,
 func (i *instrumented) DeleteKey(ctx context.Context, email, keyID string) error {
 	return call0("DeleteKey", func() error { return i.next.DeleteKey(ctx, email, keyID) })
 }
+
+func (i *instrumented) GrantProjectRole(ctx context.Context, role, member string) error {
+	return call0("GrantProjectRole", func() error { return i.next.GrantProjectRole(ctx, role, member) })
+}
+
+func (i *instrumented) RevokeProjectRole(ctx context.Context, role, member string) error {
+	return call0("RevokeProjectRole", func() error { return i.next.RevokeProjectRole(ctx, role, member) })
+}

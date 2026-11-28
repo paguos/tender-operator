@@ -1,4 +1,5 @@
-// Package gcp implements cloud.Provider on Google Cloud Storage and IAM.
+// Package gcp implements cloud.Provider on Google Cloud Storage, IAM and
+// Resource Manager (project IAM policy).
 //
 // It uses the generated REST clients (google.golang.org/api) rather than the
 // gRPC-based cloud.google.com/go/storage, which keeps the binary small.
@@ -14,6 +15,7 @@ import (
 	"path"
 	"slices"
 
+	crm "google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/googleapi"
 	iamadmin "google.golang.org/api/iam/v1"
 	"google.golang.org/api/option"
@@ -27,6 +29,7 @@ type Provider struct {
 	project string
 	storage *gcs.Service
 	iam     *iamadmin.Service
+	crm     *crm.Service
 }
 
 var _ cloud.Provider = (*Provider)(nil)
@@ -42,12 +45,16 @@ func New(ctx context.Context, project string, opts ...option.ClientOption) (*Pro
 	if err != nil {
 		return nil, fmt.Errorf("iam client: %w", err)
 	}
-	return NewWithClients(project, sc, ic), nil
+	rc, err := crm.NewService(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("resource manager client: %w", err)
+	}
+	return NewWithClients(project, sc, ic, rc), nil
 }
 
 // NewWithClients builds a Provider from existing clients (used in tests).
-func NewWithClients(project string, sc *gcs.Service, ic *iamadmin.Service) *Provider {
-	return &Provider{project: project, storage: sc, iam: ic}
+func NewWithClients(project string, sc *gcs.Service, ic *iamadmin.Service, rc *crm.Service) *Provider {
+	return &Provider{project: project, storage: sc, iam: ic, crm: rc}
 }
 
 func (p *Provider) GetBucket(ctx context.Context, name string) (*cloud.Bucket, error) {
@@ -213,6 +220,70 @@ func (p *Provider) CreateKey(ctx context.Context, email string) (*cloud.Key, err
 
 func (p *Provider) DeleteKey(ctx context.Context, email, keyID string) error {
 	_, err := p.iam.Projects.ServiceAccounts.Keys.Delete(p.saName(email) + "/keys/" + keyID).Context(ctx).Do()
+	return mapErr(err)
+}
+
+// GrantProjectRole adds member to an unconditional binding for role on the
+// project. Conditional bindings are left alone.
+func (p *Provider) GrantProjectRole(ctx context.Context, role, member string) error {
+	policy, err := p.projectPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	for _, b := range policy.Bindings {
+		if b.Role == role && b.Condition == nil {
+			if slices.Contains(b.Members, member) {
+				return nil
+			}
+			b.Members = append(b.Members, member)
+			return p.setProjectPolicy(ctx, policy)
+		}
+	}
+	policy.Bindings = append(policy.Bindings, &crm.Binding{Role: role, Members: []string{member}})
+	return p.setProjectPolicy(ctx, policy)
+}
+
+// RevokeProjectRole removes member from the unconditional binding for role.
+func (p *Provider) RevokeProjectRole(ctx context.Context, role, member string) error {
+	policy, err := p.projectPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	changed := false
+	kept := policy.Bindings[:0]
+	for _, b := range policy.Bindings {
+		if b.Role == role && b.Condition == nil {
+			if i := slices.Index(b.Members, member); i >= 0 {
+				b.Members = slices.Delete(b.Members, i, i+1)
+				changed = true
+			}
+			if len(b.Members) == 0 {
+				continue
+			}
+		}
+		kept = append(kept, b)
+	}
+	if !changed {
+		return nil
+	}
+	policy.Bindings = kept
+	return p.setProjectPolicy(ctx, policy)
+}
+
+// projectPolicy reads the project policy at version 3, so conditional
+// bindings come back intact and are written back unchanged.
+func (p *Provider) projectPolicy(ctx context.Context) (*crm.Policy, error) {
+	policy, err := p.crm.Projects.GetIamPolicy("projects/"+p.project, &crm.GetIamPolicyRequest{
+		Options: &crm.GetPolicyOptions{RequestedPolicyVersion: 3},
+	}).Context(ctx).Do()
+	return policy, mapErr(err)
+}
+
+// setProjectPolicy writes the policy back with its etag, so a concurrent edit
+// makes the call fail instead of being overwritten (the reconcile then retries).
+func (p *Provider) setProjectPolicy(ctx context.Context, policy *crm.Policy) error {
+	policy.Version = 3
+	_, err := p.crm.Projects.SetIamPolicy("projects/"+p.project, &crm.SetIamPolicyRequest{Policy: policy}).Context(ctx).Do()
 	return mapErr(err)
 }
 

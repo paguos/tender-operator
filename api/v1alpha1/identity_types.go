@@ -12,6 +12,15 @@ type IdentitySpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+
+	// ProjectRoles are predefined IAM roles (such as roles/aiplatform.user)
+	// granted to the service account on the whole project. The operator only
+	// grants roles on its allow list (--allowed-project-roles).
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:Pattern=`^roles/[a-zA-Z0-9_.]+$`
+	// +listType=set
+	// +optional
+	ProjectRoles []string `json:"projectRoles,omitempty"`
 }
 
 // IdentityStatus is the observed state of an Identity.
@@ -19,6 +28,12 @@ type IdentityStatus struct {
 	// ServiceAccount is the email of the Google service account.
 	// +optional
 	ServiceAccount string `json:"serviceAccount,omitempty"`
+
+	// ProjectRoles are the project roles tender has granted to the service
+	// account. Roles that leave spec.projectRoles are revoked.
+	// +listType=set
+	// +optional
+	ProjectRoles []string `json:"projectRoles,omitempty"`
 
 	// ObservedGeneration is the generation the status was computed for.
 	// +optional
