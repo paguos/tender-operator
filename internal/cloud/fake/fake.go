@@ -20,6 +20,7 @@ type Provider struct {
 	mu       sync.Mutex
 	buckets  map[string]*bucket
 	accounts map[string]*account
+	project  map[string][]string // project IAM: role -> members
 	nextKey  int
 }
 
@@ -42,6 +43,7 @@ func New(project string) *Provider {
 		Project:  project,
 		buckets:  map[string]*bucket{},
 		accounts: map[string]*account{},
+		project:  map[string][]string{},
 	}
 }
 
@@ -308,4 +310,36 @@ func (p *Provider) Keys(email string) []string {
 		return slices.Clone(a.keys)
 	}
 	return nil
+}
+
+func (p *Provider) GrantProjectRole(_ context.Context, role, member string) error {
+	unlock, err := p.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if !slices.Contains(p.project[role], member) {
+		p.project[role] = append(p.project[role], member)
+	}
+	return nil
+}
+
+func (p *Provider) RevokeProjectRole(_ context.Context, role, member string) error {
+	unlock, err := p.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	p.project[role] = slices.DeleteFunc(p.project[role], func(m string) bool { return m == member })
+	if len(p.project[role]) == 0 {
+		delete(p.project, role)
+	}
+	return nil
+}
+
+// ProjectMembers returns the members bound to role on the project.
+func (p *Provider) ProjectMembers(role string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.project[role])
 }

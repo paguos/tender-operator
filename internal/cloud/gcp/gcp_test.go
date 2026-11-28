@@ -29,7 +29,7 @@ func newStorageProvider(t *testing.T) (*Provider, *fakestorage.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewWithClients("test-project", sc, nil), srv
+	return NewWithClients("test-project", sc, nil, nil), srv
 }
 
 func TestBucketLifecycle(t *testing.T) {

@@ -33,7 +33,7 @@ type Key struct {
 	JSON []byte // only set when the key is created
 }
 
-// Provider manages buckets, service accounts and their keys.
+// Provider manages buckets, service accounts, their keys and project roles.
 // Every method must be idempotent where that makes sense.
 type Provider interface {
 	// GetBucket returns ErrNotFound if the bucket does not exist.
@@ -59,4 +59,9 @@ type Provider interface {
 	CreateKey(ctx context.Context, email string) (*Key, error)
 	// DeleteKey returns ErrNotFound if the key does not exist.
 	DeleteKey(ctx context.Context, email, keyID string) error
+
+	// GrantProjectRole adds member to role on the project's IAM policy.
+	GrantProjectRole(ctx context.Context, role, member string) error
+	// RevokeProjectRole removes member from role; a missing binding is not an error.
+	RevokeProjectRole(ctx context.Context, role, member string) error
 }

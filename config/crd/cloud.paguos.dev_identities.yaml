@@ -57,6 +57,17 @@ spec:
                   receives the service account's key. Defaults to "<name>-gcp". Immutable.
                 minLength: 1
                 type: string
+              projectRoles:
+                description: |-
+                  ProjectRoles are predefined IAM roles (such as roles/aiplatform.user)
+                  granted to the service account on the whole project. The operator only
+                  grants roles on its allow list (--allowed-project-roles).
+                items:
+                  pattern: ^roles/[a-zA-Z0-9_.]+$
+                  type: string
+                maxItems: 10
+                type: array
+                x-kubernetes-list-type: set
             type: object
             x-kubernetes-validations:
             - message: credentialsSecret is immutable
@@ -130,6 +141,14 @@ spec:
                   for.
                 format: int64
                 type: integer
+              projectRoles:
+                description: |-
+                  ProjectRoles are the project roles tender has granted to the service
+                  account. Roles that leave spec.projectRoles are revoked.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               serviceAccount:
                 description: ServiceAccount is the email of the Google service account.
                 type: string

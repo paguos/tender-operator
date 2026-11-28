@@ -11,6 +11,9 @@ metadata:
 data:
   project: ""
   name-prefix: tender
+  # Comma-separated project roles Identities may ask for (spec.projectRoles),
+  # e.g. roles/aiplatform.user. Empty allows none.
+  allowed-project-roles: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,6 +51,9 @@ spec:
             - name: TENDER_NAME_PREFIX
               valueFrom:
                 configMapKeyRef: { name: tender-config, key: name-prefix }
+            - name: TENDER_ALLOWED_PROJECT_ROLES
+              valueFrom:
+                configMapKeyRef: { name: tender-config, key: allowed-project-roles, optional: true }
             # A Google service-account key, provided as Secret
             # `tender-gcp-credentials` (key `credentials.json`). See README.
             - name: GOOGLE_APPLICATION_CREDENTIALS
